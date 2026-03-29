@@ -119,15 +119,13 @@ Contributions are welcome!
 
 ---
 
-## 📜 License
-
-MIT License — feel free to use and modify.
+## feel free to use and modify.
 
 ---
 
 ## 👨‍💻 Author
 
-Built with passion by **Zee**
+Built with passion by **Rayyan**
 
 ---
 
