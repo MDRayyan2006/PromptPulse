@@ -1,0 +1,217 @@
+/* ═══════════════════════════════════════════════════════════
+   content.css  —  Highlight marks & floating tooltip
+   ═══════════════════════════════════════════════════════════ */
+
+/* ─── Highlight marks ───────────────────────────────────────── */
+.hl-mark {
+  border-radius: 3px;
+  padding: 1px 0;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+  position: relative;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.hl-mark:hover {
+  filter: brightness(0.88);
+}
+
+/* Important — warm amber */
+span.hl-mark.hl-important {
+  background-color: rgba(255, 214, 10, 0.55) !important;
+  border-bottom: 2px solid #f59e0b !important;
+  text-decoration-color: transparent;
+}
+
+/* Concept — cool blue */
+span.hl-mark.hl-concept {
+  background-color: rgba(96, 165, 250, 0.45) !important;
+  border-bottom: 2px solid #3b82f6 !important;
+}
+
+/* Doubt — soft red */
+span.hl-mark.hl-doubt {
+  background-color: rgba(248, 113, 113, 0.40) !important;
+  border-bottom: 2px solid #ef4444 !important;
+}
+
+/* ─── Pulse animation (on scroll-to) ───────────────────────── */
+@keyframes hlPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.7);
+  }
+
+  50% {
+    box-shadow: 0 0 0 8px rgba(99, 102, 241, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
+  }
+}
+
+.hl-pulse {
+  animation: hlPulse 0.7s ease 3;
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Query-box / form-field highlights */
+.hl-field {
+  transition: box-shadow 0.18s ease, outline-color 0.18s ease, background-color 0.18s ease;
+}
+
+.hl-field.hl-field-important {
+  outline: 2px solid #f59e0b !important;
+  outline-offset: 1px;
+  box-shadow: inset 0 0 0 9999px rgba(255, 214, 10, 0.16) !important;
+}
+
+.hl-field.hl-field-concept {
+  outline: 2px solid #3b82f6 !important;
+  outline-offset: 1px;
+  box-shadow: inset 0 0 0 9999px rgba(96, 165, 250, 0.14) !important;
+}
+
+.hl-field.hl-field-doubt {
+  outline: 2px solid #ef4444 !important;
+  outline-offset: 1px;
+  box-shadow: inset 0 0 0 9999px rgba(248, 113, 113, 0.14) !important;
+}
+
+/* ─── Floating tooltip ──────────────────────────────────────── */
+#hl-float-tooltip {
+  position: absolute;
+  z-index: 2147483647;
+  background: #18181b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 8px 10px 10px;
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.55),
+    0 1px 4px rgba(0, 0, 0, 0.3);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  min-width: 212px;
+  animation: tipIn 0.18s cubic-bezier(0.34, 1.4, 0.64, 1) forwards;
+  transform-origin: bottom center;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@keyframes tipIn {
+  from {
+    opacity: 0;
+    transform: scale(0.88) translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.hl-tip-arrow {
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 7px;
+  overflow: hidden;
+}
+
+.hl-tip-arrow::before {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #18181b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transform: rotate(45deg) translateY(-5px);
+  left: 1px;
+}
+
+.hl-tip-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 7px;
+  padding-left: 2px;
+}
+
+.hl-tip-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.hl-tip-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 1;
+  justify-content: center;
+  transition: transform 0.1s ease, filter 0.1s ease;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.hl-tip-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+
+.hl-tip-btn:active {
+  transform: translateY(0);
+  filter: brightness(0.92);
+}
+
+.hl-tip-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Important */
+.hl-tip-important {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.hl-tip-important .hl-tip-dot {
+  background: #f59e0b;
+}
+
+/* Concept */
+.hl-tip-concept {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.hl-tip-concept .hl-tip-dot {
+  background: #3b82f6;
+}
+
+/* Doubt */
+.hl-tip-doubt {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.32);
+}
+
+.hl-tip-doubt .hl-tip-dot {
+  background: #ef4444;
+}
