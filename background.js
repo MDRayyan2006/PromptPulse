@@ -1,16 +1,4 @@
-/**
- * background.js — Service Worker
- * Handles: side panel activation, Gemini API calls, cross-tab storage events.
- */
 
-// ─────────────────────────────────────────────────────────────
-// CONFIGURATION — Replace with your Gemini API key.
-// ─────────────────────────────────────────────────────────────
-// const CONFIG = {
-//   GEMINI_API_KEY: "AIzaSyAYfMYL1-1y2BzYN-lwAF9_o4Y7B773NsI",   // ← paste your key here
-//   GEMINI_MODEL:   "gemini-1.5-flash",
-//   GEMINI_ENDPOINT: "https://generativelanguage.googleapis.com/v1beta/models/"
-// };
 
 // ─────────────────────────────────────────────────────────────
 // Side Panel — open on action-button click
