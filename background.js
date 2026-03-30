@@ -1,9 +1,17 @@
+<<<<<<< HEAD
 /**
  * background.js — Service Worker
  * Handles side panel behavior and highlight storage/export actions.
  */
 
 // Open side panel when extension action is clicked.
+=======
+
+
+// ─────────────────────────────────────────────────────────────
+// Side Panel — open on action-button click
+// ─────────────────────────────────────────────────────────────
+>>>>>>> 0cf3bf52cfc108b043bc97fd20b2efbef7a75898
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch(console.error);
