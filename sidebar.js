@@ -1,96 +1,114 @@
-/**
- * sidebar.js — Sidebar panel controller
- * Manages: highlights list, flashcard generation/display, quiz mode, export.
- */
-
 "use strict";
 
-// ─────────────────────────────────────────────────────────────
-// State
-// ─────────────────────────────────────────────────────────────
+const CATEGORY_KEY = "highlightCategories";
+
 let allHighlights = [];
-let allFlashcards = [];
+let categories = getDefaultCategories();
 let activeFilter = "all";
-let selectedHlId = null;   // for flashcard generation
-let quizCards = [];
-let quizIndex = 0;
-let quizScore = 0;
 let hasShownLoadFailureNote = false;
+let searchDebounceTimer = null;
 
-// ─────────────────────────────────────────────────────────────
-// DOM references
-// ─────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
-const $$ = (sel) => document.querySelectorAll(sel);
 
-function setText(id, value) {
-  const el = $(id);
-  if (el) el.textContent = value;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Bootstrap
-// ─────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-  setupTabs();
-  setupFilters();
   setupSearch();
+  setupBulkActions();
+  setupCategoryActions();
   setupExport();
-  setupQuiz();
   loadData();
   setupStorageSync();
 
-  // Listen for new highlights from content script
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "HIGHLIGHT_CREATED") {
       allHighlights.unshift(msg.highlight);
       renderHighlights();
-      renderPickerList();
       updateBadges();
     }
   });
 });
+
+function getDefaultCategories() {
+  return [
+    { id: "important", name: "Important", color: "#f59e0b" },
+    { id: "concept", name: "Concept", color: "#3b82f6" },
+    { id: "doubt", name: "Doubt", color: "#ef4444" }
+  ];
+}
+
+function normalizeHexColor(value) {
+  const v = String(value || "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+  return null;
+}
+
+function normalizeCategoryId(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+}
+
+function normalizeCategories(list) {
+  const defaults = getDefaultCategories();
+  if (!Array.isArray(list) || list.length === 0) return defaults;
+
+  const seen = new Set();
+  const normalized = [];
+
+  list.forEach((c) => {
+    const name = String(c?.name || "").trim().slice(0, 24);
+    const color = normalizeHexColor(c?.color);
+    const id = normalizeCategoryId(c?.id || name);
+    if (!name || !color || !id || seen.has(id)) return;
+    seen.add(id);
+    normalized.push({ id, name, color });
+  });
+
+  defaults.forEach((d) => {
+    if (!seen.has(d.id)) normalized.push(d);
+  });
+
+  return normalized;
+}
+
+function sortByNewest(items) {
+  return [...(items || [])].sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function getCategoryById(id) {
+  return categories.find((c) => c.id === id) || getDefaultCategories().find((c) => c.id === id) || null;
+}
 
 function setupStorageSync() {
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
 
     if (changes.highlights) {
-      allHighlights = (changes.highlights.newValue || []).sort((a, b) => b.timestamp - a.timestamp);
-
-      if (selectedHlId && !allHighlights.some((h) => h.id === selectedHlId)) {
-        selectedHlId = null;
-        const btn = $("btnGenerate");
-        if (btn) btn.disabled = true;
-      }
-
+      allHighlights = sortByNewest(changes.highlights.newValue || []);
       renderHighlights();
-      renderPickerList();
       updateBadges();
     }
 
-    if (changes.flashcards) {
-      allFlashcards = (changes.flashcards.newValue || []).sort((a, b) => b.timestamp - a.timestamp);
-      renderFlashcards();
-      updateBadges();
+    if (changes.highlightCategories) {
+      categories = normalizeCategories(changes.highlightCategories.newValue);
+      renderFilters();
+      renderHighlights();
     }
   });
 }
 
-// ─────────────────────────────────────────────────────────────
-// Data
-// ─────────────────────────────────────────────────────────────
 function loadData() {
   chrome.runtime.sendMessage({ type: "GET_ALL_DATA" }, (res) => {
     if (chrome.runtime.lastError || !res) {
       showPanelLoadFailureNote();
       return;
     }
-    allHighlights = (res.highlights || []).sort((a, b) => b.timestamp - a.timestamp);
-    allFlashcards = (res.flashcards || []).sort((a, b) => b.timestamp - a.timestamp);
+
+    allHighlights = sortByNewest(res.highlights || []);
+    categories = normalizeCategories(res.highlightCategories || []);
+    renderFilters();
     renderHighlights();
-    renderFlashcards();
-    renderPickerList();
     updateBadges();
   });
 }
@@ -101,45 +119,137 @@ function showPanelLoadFailureNote() {
   showToast("If panel fails to load, refresh and highlight again.");
 }
 
-// ─────────────────────────────────────────────────────────────
-// Tabs
-// ─────────────────────────────────────────────────────────────
-function setupTabs() {
-  $$(".sb-tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      $$(".sb-tab").forEach((t) => t.classList.remove("active"));
-      $$(".sb-panel").forEach((p) => p.classList.remove("active"));
-      tab.classList.add("active");
-      $(`panel-${tab.dataset.tab}`).classList.add("active");
-    });
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// Filters
-// ─────────────────────────────────────────────────────────────
-function setupFilters() {
-  $$(".sb-filter").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      $$(".sb-filter").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      activeFilter = btn.dataset.filter;
-      renderHighlights();
-    });
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// Search
-// ─────────────────────────────────────────────────────────────
 function setupSearch() {
   const search = $("hlSearch");
-  if (search) search.addEventListener("input", () => renderHighlights());
+  if (!search) return;
+
+  search.addEventListener("input", () => {
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(renderHighlights, 120);
+  });
 }
 
-// ─────────────────────────────────────────────────────────────
-// Render Highlights
-// ─────────────────────────────────────────────────────────────
+function setupBulkActions() {
+  const btnClearAllHighlights = $("btnClearAllHighlights");
+  if (btnClearAllHighlights) {
+    btnClearAllHighlights.addEventListener("click", clearAllHighlights);
+  }
+}
+
+function setupCategoryActions() {
+  const btnAdd = $("btnAddCategory");
+  const btnSave = $("btnSaveCategory");
+  const btnCancel = $("btnCancelCategory");
+
+  if (btnAdd) btnAdd.addEventListener("click", () => toggleAddPanel(true));
+  if (btnCancel) btnCancel.addEventListener("click", () => toggleAddPanel(false));
+  if (btnSave) btnSave.addEventListener("click", saveNewCategory);
+
+  const filtersWrap = $("hlFilters");
+  if (filtersWrap) {
+    filtersWrap.addEventListener("click", (e) => {
+      const btn = e.target.closest(".sb-filter");
+      if (!btn) return;
+      activeFilter = btn.dataset.filter || "all";
+      renderFilters();
+      renderHighlights();
+    });
+  }
+}
+
+function toggleAddPanel(show) {
+  const panel = $("addCategoryPanel");
+  if (!panel) return;
+
+  panel.classList.toggle("hidden", !show);
+
+  if (show) {
+    const input = $("newCategoryName");
+    if (input) input.focus();
+  } else {
+    resetCategoryForm();
+  }
+}
+
+function resetCategoryForm() {
+  const nameInput = $("newCategoryName");
+  const colorInput = $("newCategoryColor");
+  if (nameInput) nameInput.value = "";
+  if (colorInput) colorInput.value = "#10b981";
+}
+
+function saveNewCategory() {
+  const nameInput = $("newCategoryName");
+  const colorInput = $("newCategoryColor");
+
+  const name = String(nameInput?.value || "").trim();
+  const color = normalizeHexColor(colorInput?.value);
+
+  if (!name) {
+    showToast("Enter a category name");
+    return;
+  }
+
+  if (!color) {
+    showToast("Choose a valid color");
+    return;
+  }
+
+  let baseId = normalizeCategoryId(name);
+  if (!baseId) baseId = `custom-${Date.now()}`;
+
+  let id = baseId;
+  let counter = 2;
+  while (categories.some((c) => c.id === id)) {
+    id = `${baseId}-${counter}`;
+    counter++;
+  }
+
+  const next = [...categories, { id, name: name.slice(0, 24), color }];
+
+  chrome.storage.local.set({ [CATEGORY_KEY]: next }, () => {
+    categories = normalizeCategories(next);
+    renderFilters();
+    renderHighlights();
+    toggleAddPanel(false);
+    showToast("Category added");
+  });
+}
+
+function renderFilters() {
+  const wrap = $("hlFilters");
+  if (!wrap) return;
+
+  if (activeFilter !== "all" && !categories.some((c) => c.id === activeFilter)) {
+    activeFilter = "all";
+  }
+
+  wrap.innerHTML = "";
+
+  const allBtn = document.createElement("button");
+  allBtn.className = `sb-filter ${activeFilter === "all" ? "active" : ""}`;
+  allBtn.dataset.filter = "all";
+  allBtn.textContent = "All";
+  wrap.appendChild(allBtn);
+
+  categories.forEach((cat) => {
+    const btn = document.createElement("button");
+    btn.className = `sb-filter ${activeFilter === cat.id ? "active" : ""}`;
+    btn.dataset.filter = cat.id;
+
+    const dot = document.createElement("span");
+    dot.className = "sb-filter-dot";
+    dot.style.background = cat.color;
+
+    const label = document.createElement("span");
+    label.textContent = cat.name;
+
+    btn.appendChild(dot);
+    btn.appendChild(label);
+    wrap.appendChild(btn);
+  });
+}
+
 function renderHighlights() {
   const list = $("hlList");
   const emptyEl = $("hlEmpty");
@@ -152,33 +262,35 @@ function renderHighlights() {
   if (activeFilter !== "all") items = items.filter((h) => h.type === activeFilter);
   if (query) items = items.filter((h) => h.text.toLowerCase().includes(query));
 
-  // Clear (keep empty placeholder)
   list.querySelectorAll(".sb-hl-item").forEach((el) => el.remove());
 
   if (items.length === 0) {
     emptyEl.classList.remove("hidden");
     return;
   }
+
   emptyEl.classList.add("hidden");
 
+  const fragment = document.createDocumentFragment();
   items.forEach((h, i) => {
-    const li = buildHighlightItem(h, i);
-    list.appendChild(li);
+    fragment.appendChild(buildHighlightItem(h, i));
   });
+  list.appendChild(fragment);
 }
 
 function buildHighlightItem(h, delay = 0) {
   const li = document.createElement("li");
   li.className = "sb-hl-item";
   li.style.animationDelay = `${delay * 30}ms`;
-  li.dataset.id = h.id;
 
-  const date = formatDate(h.timestamp);
+  const category = getCategoryById(h.type);
+  const badgeLabel = h.categoryName || category?.name || capitalize(h.type || "highlight");
+  const badgeColor = normalizeHexColor(h.categoryColor) || category?.color || "#f59e0b";
 
   li.innerHTML = `
     <div class="sb-hl-item-top">
-      <span class="sb-hl-type-badge ${h.type}">${capitalize(h.type)}</span>
-      <span class="sb-hl-date">${date}</span>
+      <span class="sb-hl-type-badge">${escapeHtml(badgeLabel)}</span>
+      <span class="sb-hl-date">${formatDate(h.timestamp)}</span>
     </div>
     <p class="sb-hl-text">${escapeHtml(h.text)}</p>
     <div class="sb-hl-actions">
@@ -187,13 +299,18 @@ function buildHighlightItem(h, delay = 0) {
     </div>
   `;
 
-  // Scroll to
+  const badge = li.querySelector(".sb-hl-type-badge");
+  if (badge) {
+    badge.style.background = hexToRgba(badgeColor, 0.16);
+    badge.style.border = `1px solid ${hexToRgba(badgeColor, 0.45)}`;
+    badge.style.color = badgeColor;
+  }
+
   li.querySelector('[data-action="scroll"]').addEventListener("click", (e) => {
     e.stopPropagation();
     scrollToHighlight(h.id, h.url);
   });
 
-  // Delete
   li.querySelector('[data-action="delete"]').addEventListener("click", (e) => {
     e.stopPropagation();
     deleteHighlight(h.id);
@@ -202,133 +319,6 @@ function buildHighlightItem(h, delay = 0) {
   return li;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Render Flashcards
-// ─────────────────────────────────────────────────────────────
-function renderFlashcards() {
-  const list = $("fcList");
-  const emptyEl = $("fcEmpty");
-
-  if (!list || !emptyEl) return;
-
-  list.querySelectorAll(".sb-fc-item").forEach((el) => el.remove());
-
-  if (allFlashcards.length === 0) {
-    emptyEl.classList.remove("hidden");
-    return;
-  }
-  emptyEl.classList.add("hidden");
-
-  allFlashcards.forEach((f, i) => {
-    const li = buildFlashcardItem(f, i);
-    list.appendChild(li);
-  });
-}
-
-function buildFlashcardItem(f, delay = 0) {
-  const li = document.createElement("li");
-  li.className = "sb-fc-item";
-  li.style.animationDelay = `${delay * 30}ms`;
-
-  const date = formatDate(f.timestamp);
-
-  li.innerHTML = `
-    <p class="sb-fc-item-q">${escapeHtml(f.question)}</p>
-    <p class="sb-fc-item-a">${escapeHtml(f.answer)}</p>
-    <div class="sb-fc-item-footer">
-      <span class="sb-fc-date">${date}</span>
-      <button class="sb-hl-action-btn danger" data-id="${f.id}">✕ Delete</button>
-    </div>
-  `;
-
-  li.querySelector("button").addEventListener("click", () => deleteFlashcard(f.id));
-  return li;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Picker (for flashcard generation)
-// ─────────────────────────────────────────────────────────────
-function renderPickerList() {
-  const list = $("fcPickerList");
-  const emptyEl = $("fcPickerEmpty");
-
-  if (!list || !emptyEl) return;
-
-  list.querySelectorAll(".sb-picker-item").forEach((el) => el.remove());
-
-  if (allHighlights.length === 0) {
-    emptyEl.classList.remove("hidden");
-    return;
-  }
-  emptyEl.classList.add("hidden");
-
-  allHighlights.forEach((h) => {
-    const li = document.createElement("li");
-    li.className = "sb-picker-item";
-    li.dataset.id = h.id;
-    if (h.id === selectedHlId) li.classList.add("selected");
-
-    li.innerHTML = `
-      <span class="sb-hl-type-badge ${h.type}" style="font-size:9px;padding:1px 6px;">${capitalize(h.type)}</span>
-      <p class="sb-picker-text">${escapeHtml(h.text)}</p>
-    `;
-
-    li.addEventListener("click", () => {
-      $$(".sb-picker-item").forEach((el) => el.classList.remove("selected"));
-      li.classList.add("selected");
-      selectedHlId = h.id;
-      const btnGenerate = $("btnGenerate");
-      if (btnGenerate) btnGenerate.disabled = false;
-    });
-
-    list.appendChild(li);
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// Flashcard Generation
-// ─────────────────────────────────────────────────────────────
-document.addEventListener("DOMContentLoaded", () => {
-  const btnGenerate = $("btnGenerate");
-  if (btnGenerate) btnGenerate.addEventListener("click", generateFlashcard);
-});
-
-async function generateFlashcard() {
-  const hl = allHighlights.find((h) => h.id === selectedHlId);
-  if (!hl) return;
-
-  const btn = $("btnGenerate");
-  const spinner = $("fcSpinner");
-  const errEl = $("fcError");
-
-  btn.disabled = true;
-  spinner.classList.remove("hidden");
-  errEl.classList.add("hidden");
-
-  chrome.runtime.sendMessage({ type: "GENERATE_FLASHCARD", text: hl.text }, (res) => {
-    spinner.classList.add("hidden");
-    btn.disabled = false;
-
-    if (!res || !res.success) {
-      errEl.textContent = res?.error || "Failed to generate flashcard.";
-      errEl.classList.remove("hidden");
-      return;
-    }
-
-    const card = { ...res.card, highlightId: selectedHlId };
-
-    chrome.runtime.sendMessage({ type: "SAVE_FLASHCARD", flashcard: card }, () => {
-      allFlashcards.unshift(card);
-      renderFlashcards();
-      updateBadges();
-      showToast("✓ Flashcard saved");
-    });
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// Actions
-// ─────────────────────────────────────────────────────────────
 function scrollToHighlight(id, url) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs[0]) return;
@@ -348,7 +338,8 @@ function scrollToHighlight(id, url) {
       return;
     }
 
-    let targetUrl, activeUrl;
+    let targetUrl;
+    let activeUrl;
     try {
       targetUrl = new URL(url);
       activeUrl = new URL(tabs[0].url);
@@ -380,38 +371,47 @@ function scrollToHighlight(id, url) {
 
 function deleteHighlight(id) {
   chrome.runtime.sendMessage({ type: "DELETE_HIGHLIGHT", id }, () => {
-    // Remove from DOM in active tab
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, { type: "REMOVE_HIGHLIGHT_DOM", id }).catch(() => { });
+        chrome.tabs.sendMessage(tabs[0].id, { type: "REMOVE_HIGHLIGHT_DOM", id }).catch(() => {});
       }
     });
 
     allHighlights = allHighlights.filter((h) => h.id !== id);
-    if (selectedHlId === id) {
-      selectedHlId = null;
-      const btnGenerate = $("btnGenerate");
-      if (btnGenerate) btnGenerate.disabled = true;
-    }
     renderHighlights();
-    renderPickerList();
     updateBadges();
     showToast("Highlight deleted");
   });
 }
 
-function deleteFlashcard(id) {
-  chrome.runtime.sendMessage({ type: "DELETE_FLASHCARD", id }, () => {
-    allFlashcards = allFlashcards.filter((f) => f.id !== id);
-    renderFlashcards();
+function clearAllHighlights() {
+  if (allHighlights.length === 0) {
+    showToast("No highlights to clear");
+    return;
+  }
+
+  const shouldClear = window.confirm("Clear all highlights? This action cannot be undone.");
+  if (!shouldClear) return;
+
+  chrome.runtime.sendMessage({ type: "CLEAR_ALL_HIGHLIGHTS" }, (res) => {
+    if (!res?.success) {
+      showToast("Failed to clear highlights");
+      return;
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: "REMOVE_ALL_HIGHLIGHTS_DOM" }).catch(() => {});
+      }
+    });
+
+    allHighlights = [];
+    renderHighlights();
     updateBadges();
-    showToast("Flashcard deleted");
+    showToast("All highlights cleared");
   });
 }
 
-// ─────────────────────────────────────────────────────────────
-// Export
-// ─────────────────────────────────────────────────────────────
 function setupExport() {
   const btnJson = $("btnExportJson");
   const btnMd = $("btnExportMd");
@@ -422,119 +422,25 @@ function setupExport() {
 function triggerExport(format) {
   chrome.runtime.sendMessage({ type: "EXPORT_DATA", format }, (res) => {
     if (!res?.content) return;
+
     const ext = format === "markdown" ? "md" : "json";
     const mimeType = format === "markdown" ? "text/markdown" : "application/json";
     const blob = new Blob([res.content], { type: mimeType });
     const url = URL.createObjectURL(blob);
+
     const a = document.createElement("a");
     a.href = url;
     a.download = `ai-highlights-${Date.now()}.${ext}`;
     a.click();
+
     URL.revokeObjectURL(url);
     showToast(`Exported as .${ext}`);
   });
 }
 
-// ─────────────────────────────────────────────────────────────
-// Quiz Mode
-// ─────────────────────────────────────────────────────────────
-function setupQuiz() {
-  const btnQuizStart = $("btnQuizStart");
-  const btnReveal = $("btnReveal");
-  const btnCorrect = $("btnCorrect");
-  const btnWrong = $("btnWrong");
-  const btnQuizRestart = $("btnQuizRestart");
-
-  if (btnQuizStart) btnQuizStart.addEventListener("click", startQuiz);
-  if (btnReveal) btnReveal.addEventListener("click", revealAnswer);
-  if (btnCorrect) btnCorrect.addEventListener("click", () => gradeCard(true));
-  if (btnWrong) btnWrong.addEventListener("click", () => gradeCard(false));
-  if (btnQuizRestart) btnQuizRestart.addEventListener("click", startQuiz);
-}
-
-function startQuiz() {
-  quizCards = shuffle([...allFlashcards]);
-  quizIndex = 0;
-  quizScore = 0;
-
-  if (quizCards.length === 0) {
-    showToast("No flashcards to quiz on yet.");
-    return;
-  }
-
-  $("quizStart").classList.add("hidden");
-  $("quizResult").classList.add("hidden");
-  $("quizCard").classList.remove("hidden");
-  showQuizCard();
-}
-
-function showQuizCard() {
-  if (quizIndex >= quizCards.length) {
-    endQuiz();
-    return;
-  }
-
-  const card = quizCards[quizIndex];
-  const pct = Math.round((quizIndex / quizCards.length) * 100);
-
-  const qProgressBar = $("qProgressBar");
-  const qCounter = $("qCounter");
-  const qQuestion = $("qQuestion");
-  const qAnswer = $("qAnswer");
-  const qGrade = $("qGrade");
-  const btnReveal = $("btnReveal");
-
-  if (qProgressBar) qProgressBar.style.width = `${pct}%`;
-  if (qCounter) qCounter.textContent = `${quizIndex + 1} / ${quizCards.length}`;
-  if (qQuestion) qQuestion.textContent = card.question;
-  if (qAnswer) {
-    qAnswer.textContent = card.answer;
-    qAnswer.classList.add("hidden");
-  }
-  if (qGrade) qGrade.classList.add("hidden");
-  if (btnReveal) btnReveal.classList.remove("hidden");
-}
-
-function revealAnswer() {
-  const qAnswer = $("qAnswer");
-  const qGrade = $("qGrade");
-  const btnReveal = $("btnReveal");
-  if (qAnswer) qAnswer.classList.remove("hidden");
-  if (qGrade) qGrade.classList.remove("hidden");
-  if (btnReveal) btnReveal.classList.add("hidden");
-}
-
-function gradeCard(correct) {
-  if (correct) quizScore++;
-  quizIndex++;
-  showQuizCard();
-}
-
-function endQuiz() {
-  const quizCard = $("quizCard");
-  const quizResult = $("quizResult");
-  if (quizCard) quizCard.classList.add("hidden");
-  if (quizResult) quizResult.classList.remove("hidden");
-  const pct = Math.round((quizScore / quizCards.length) * 100);
-  setText("quizScore", `${quizScore}/${quizCards.length} (${pct}%)`);
-  setText("quizCount", `${allFlashcards.length} flashcard${allFlashcards.length !== 1 ? "s" : ""} available`);
-}
-
-// ─────────────────────────────────────────────────────────────
-// Badges & UI helpers
-// ─────────────────────────────────────────────────────────────
 function updateBadges() {
   const hlCountEl = $("hlCount");
-  const fcCountEl = $("fcCount");
-  const quizCountEl = $("quizCount");
-
   if (hlCountEl) hlCountEl.textContent = allHighlights.length;
-  if (fcCountEl) fcCountEl.textContent = allFlashcards.length;
-  if (quizCountEl) {
-    quizCountEl.textContent = allFlashcards.length > 0
-      ? `${allFlashcards.length} flashcard${allFlashcards.length !== 1 ? "s" : ""} available`
-      : "No flashcards yet — generate some first.";
-  }
 }
 
 function showToast(msg) {
@@ -545,12 +451,10 @@ function showToast(msg) {
   t.className = "sb-toast";
   t.textContent = msg;
   document.body.appendChild(t);
+
   setTimeout(() => t.remove(), 2400);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Utilities
-// ─────────────────────────────────────────────────────────────
 function formatDate(ts) {
   const d = new Date(ts);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
@@ -558,21 +462,22 @@ function formatDate(ts) {
 }
 
 function capitalize(s) {
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  return String(s || "").charAt(0).toUpperCase() + String(s || "").slice(1);
+}
+
+function hexToRgba(hex, alpha) {
+  const clean = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return `rgba(99, 102, 241, ${alpha})`;
+  const r = Number.parseInt(clean.slice(0, 2), 16);
+  const g = Number.parseInt(clean.slice(2, 4), 16);
+  const b = Number.parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function escapeHtml(str) {
-  return str
+  return String(str || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
+    .replace(/\"/g, "&quot;");
 }

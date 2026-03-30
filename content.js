@@ -14,6 +14,7 @@
   // ─── Constants ─────────────────────────────────────────────
   const TOOLTIP_ID = "hl-float-tooltip";
   const STORAGE_KEY = "highlights";
+  const CATEGORY_KEY = "highlightCategories";
   const PULSE_CLASS = "hl-pulse";
   const DEFAULT_MIN_SELECTION = 3;
   const CODE_MIN_SELECTION = 1;
@@ -77,14 +78,21 @@
   let savedRange = null;
   let savedFieldSelection = null;
   let lastRangeSnapshot = null;
+  let categories = getDefaultCategories();
 
   // ─── Init ──────────────────────────────────────────────────
   function init() {
+    syncCategories();
     document.addEventListener("mouseup", onMouseUp, { passive: true });
     document.addEventListener("mousedown", onMouseDown, { passive: true });
     document.addEventListener("keyup", onKeyUp, { passive: true });
     document.addEventListener("selectionchange", onSelectionChange, { passive: true });
     chrome.runtime.onMessage.addListener(onMessage);
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === "local" && changes.highlightCategories) {
+        categories = normalizeCategories(changes.highlightCategories.newValue);
+      }
+    });
 
     const performRehydrate = () => {
       rehydrateAll();
@@ -96,6 +104,49 @@
 
     // Watch for SPA navigations
     observeNavigation();
+  }
+
+  function getDefaultCategories() {
+    return [
+      { id: "important", name: "Important", color: "#f59e0b" },
+      { id: "concept", name: "Concept", color: "#3b82f6" },
+      { id: "doubt", name: "Doubt", color: "#ef4444" }
+    ];
+  }
+
+  function normalizeHexColor(value) {
+    const v = String(value || "").trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+    return null;
+  }
+
+  function normalizeCategories(list) {
+    const defaults = getDefaultCategories();
+    if (!Array.isArray(list) || list.length === 0) return defaults;
+
+    const seen = new Set();
+    const normalized = [];
+
+    list.forEach((c) => {
+      const name = String(c?.name || "").trim().slice(0, 24);
+      const id = String(c?.id || "").trim().toLowerCase();
+      const color = normalizeHexColor(c?.color);
+      if (!name || !id || !color || seen.has(id)) return;
+      seen.add(id);
+      normalized.push({ id, name, color });
+    });
+
+    defaults.forEach((d) => {
+      if (!seen.has(d.id)) normalized.push(d);
+    });
+
+    return normalized;
+  }
+
+  function syncCategories() {
+    safeStorageGet([CATEGORY_KEY], (res) => {
+      categories = normalizeCategories(res[CATEGORY_KEY]);
+    });
   }
 
   function checkPendingScroll() {
@@ -212,18 +263,29 @@
     tip.innerHTML = `
       <div class="hl-tip-arrow"></div>
       <div class="hl-tip-label">Highlight as</div>
-      <div class="hl-tip-btns">
-        <button class="hl-tip-btn hl-tip-important" data-type="important">
-          <span class="hl-tip-dot"></span>Important
-        </button>
-        <button class="hl-tip-btn hl-tip-concept" data-type="concept">
-          <span class="hl-tip-dot"></span>Concept
-        </button>
-        <button class="hl-tip-btn hl-tip-doubt" data-type="doubt">
-          <span class="hl-tip-dot"></span>Doubt
-        </button>
-      </div>
+      <div class="hl-tip-btns"></div>
     `;
+
+    const btnWrap = tip.querySelector(".hl-tip-btns");
+    categories.forEach((category) => {
+      const btn = document.createElement("button");
+      btn.className = "hl-tip-btn";
+      btn.dataset.type = category.id;
+      btn.style.background = hexToRgba(category.color, 0.2);
+      btn.style.border = `1px solid ${hexToRgba(category.color, 0.4)}`;
+      btn.style.color = category.color;
+
+      const dot = document.createElement("span");
+      dot.className = "hl-tip-dot";
+      dot.style.background = category.color;
+
+      const textNode = document.createElement("span");
+      textNode.textContent = category.name;
+
+      btn.appendChild(dot);
+      btn.appendChild(textNode);
+      btnWrap.appendChild(btn);
+    });
 
     document.body.appendChild(tip);
     activeTooltip = tip;
@@ -250,7 +312,7 @@
       btn.addEventListener("mousedown", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        applyHighlight(btn.dataset.type);
+        applyHighlight(btn.dataset.type || "important");
         destroyTooltip();
       });
     });
@@ -267,8 +329,11 @@
   // Highlight Creation
   // ─────────────────────────────────────────────────────────────
   function applyHighlight(type) {
+    const category = getCategoryById(type);
+    if (!category) return;
+
     if (savedFieldSelection) {
-      applyFieldHighlight(type);
+      applyFieldHighlight(category);
       return;
     }
 
@@ -284,7 +349,7 @@
     let appliedCount = 0;
 
     if (textNodes.length === 0) {
-      if (!applyRangeFallback(savedRange, id, type)) return;
+      if (!applyRangeFallback(savedRange, id, category.id, category.color)) return;
       appliedCount = 1;
     }
 
@@ -300,7 +365,7 @@
       if (!parent) return;
       if (parent?.classList?.contains("hl-mark")) return;
 
-      const span = buildSpan(id, type);
+      const span = buildSpan(id, category.id, category.color);
       span.textContent = inside;
 
       if (before) parent.insertBefore(document.createTextNode(before), node);
@@ -311,7 +376,7 @@
       appliedCount++;
     });
 
-    if (appliedCount === 0 && !applyRangeFallback(savedRange, id, type)) return;
+    if (appliedCount === 0 && !applyRangeFallback(savedRange, id, category.id, category.color)) return;
 
     window.getSelection()?.removeAllRanges();
     savedRange = null;
@@ -320,7 +385,9 @@
     const highlight = {
       id,
       text,
-      type,
+      type: category.id,
+      categoryName: category.name,
+      categoryColor: category.color,
       timestamp: Date.now(),
       url: location.href,
       urlKey: getPageKey(),
@@ -333,19 +400,21 @@
     safeSendMessage({ type: "HIGHLIGHT_CREATED", highlight });
   }
 
-  function applyFieldHighlight(type) {
+  function applyFieldHighlight(category) {
     const fieldSel = savedFieldSelection;
     if (!fieldSel || !fieldSel.element?.isConnected) return;
 
     const id = generateId();
-    fieldSel.element.classList.remove("hl-field-important", "hl-field-concept", "hl-field-doubt");
-    fieldSel.element.classList.add("hl-field", `hl-field-${type}`);
+    fieldSel.element.classList.add("hl-field");
+    applyFieldStyle(fieldSel.element, category.color);
     fieldSel.element.dataset.hlFieldId = id;
 
     const highlight = {
       id,
       text: fieldSel.text,
-      type,
+      type: category.id,
+      categoryName: category.name,
+      categoryColor: category.color,
       timestamp: Date.now(),
       url: location.href,
       urlKey: getPageKey(),
@@ -397,13 +466,13 @@
     return textNodes;
   }
 
-  function applyRangeFallback(range, id, type) {
+  function applyRangeFallback(range, id, type, color) {
     try {
       const r = range.cloneRange();
       const selectedText = r.toString().trim();
       if (!selectedText) return false;
 
-      const span = buildSpan(id, type);
+      const span = buildSpan(id, type, color);
       const frag = r.extractContents();
       span.appendChild(frag);
       r.insertNode(span);
@@ -413,9 +482,11 @@
     }
   }
 
-  function buildSpan(id, type) {
+  function buildSpan(id, type, color) {
     const span = document.createElement("span");
-    span.className = `hl-mark hl-${type}`;
+    span.className = "hl-mark";
+    span.dataset.hlType = type;
+    applyInlineHighlightStyle(span, color);
     span.dataset.hlId = id;
     return span;
   }
@@ -471,8 +542,8 @@
   function restoreFieldHighlight(h) {
     const el = h.fieldSelector ? document.querySelector(h.fieldSelector) : null;
     if (!el) return;
-    el.classList.remove("hl-field-important", "hl-field-concept", "hl-field-doubt");
-    el.classList.add("hl-field", `hl-field-${h.type}`);
+    el.classList.add("hl-field");
+    applyFieldStyle(el, resolveHighlightColor(h));
     el.dataset.hlFieldId = h.id;
   }
 
@@ -505,14 +576,14 @@
     const matches = findAllMatches(charMap, target, h);
     if (matches.length) {
       for (const m of matches) {
-        if (applyMatchFromCharMap(charMap, m.start, m.end, h.id, h.type)) {
+        if (applyMatchFromCharMap(charMap, m.start, m.end, h)) {
           return;
         }
       }
     }
   }
 
-  function applyMatchFromCharMap(charMap, matchStart, matchEnd, id, type) {
+  function applyMatchFromCharMap(charMap, matchStart, matchEnd, highlight) {
     const highlightNodes = [];
     let currentNode = null;
     let startOffset = 0;
@@ -547,7 +618,7 @@
       if (!parent) return;
       if (parent?.classList?.contains("hl-mark")) return;
 
-      const span = buildSpan(id, type);
+      const span = buildSpan(highlight.id, highlight.type, resolveHighlightColor(highlight));
       span.textContent = inside;
 
       if (before) parent.insertBefore(document.createTextNode(before), node);
@@ -607,9 +678,30 @@
 
         const fieldEl = document.querySelector(`[data-hl-field-id="${msg.id}"]`);
         if (fieldEl) {
-          fieldEl.classList.remove("hl-field", "hl-field-important", "hl-field-concept", "hl-field-doubt", PULSE_CLASS);
+          fieldEl.classList.remove("hl-field", PULSE_CLASS);
+          clearFieldStyle(fieldEl);
           delete fieldEl.dataset.hlFieldId;
         }
+
+        sendResponse({ done: true });
+        break;
+      }
+
+      case "REMOVE_ALL_HIGHLIGHTS_DOM": {
+        const nodes = document.querySelectorAll("[data-hl-id]");
+        nodes.forEach((el) => {
+          const parent = el.parentNode;
+          if (!parent) return;
+          while (el.firstChild) parent.insertBefore(el.firstChild, el);
+          el.remove();
+        });
+
+        const fieldNodes = document.querySelectorAll("[data-hl-field-id]");
+        fieldNodes.forEach((fieldEl) => {
+          fieldEl.classList.remove("hl-field", PULSE_CLASS);
+          clearFieldStyle(fieldEl);
+          delete fieldEl.dataset.hlFieldId;
+        });
 
         sendResponse({ done: true });
         break;
@@ -626,6 +718,43 @@
   // ─────────────────────────────────────────────────────────────
   // Utilities
   // ─────────────────────────────────────────────────────────────
+  function getCategoryById(id) {
+    return categories.find((c) => c.id === id) || getDefaultCategories().find((c) => c.id === id) || null;
+  }
+
+  function resolveHighlightColor(highlight) {
+    return normalizeHexColor(highlight?.categoryColor) || getCategoryById(highlight?.type)?.color || "#f59e0b";
+  }
+
+  function applyInlineHighlightStyle(el, color) {
+    const c = normalizeHexColor(color) || "#f59e0b";
+    el.style.backgroundColor = hexToRgba(c, 0.34);
+    el.style.borderBottom = `2px solid ${c}`;
+    el.style.textDecorationColor = "transparent";
+  }
+
+  function applyFieldStyle(el, color) {
+    const c = normalizeHexColor(color) || "#f59e0b";
+    el.style.outline = `2px solid ${c}`;
+    el.style.outlineOffset = "1px";
+    el.style.boxShadow = `inset 0 0 0 9999px ${hexToRgba(c, 0.16)}`;
+  }
+
+  function clearFieldStyle(el) {
+    el.style.outline = "";
+    el.style.outlineOffset = "";
+    el.style.boxShadow = "";
+  }
+
+  function hexToRgba(hex, alpha) {
+    const clean = String(hex || "").replace("#", "");
+    if (!/^[0-9a-fA-F]{6}$/.test(clean)) return `rgba(245, 158, 11, ${alpha})`;
+    const r = Number.parseInt(clean.slice(0, 2), 16);
+    const g = Number.parseInt(clean.slice(2, 4), 16);
+    const b = Number.parseInt(clean.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
   function generateId() {
     return `hl_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
   }
